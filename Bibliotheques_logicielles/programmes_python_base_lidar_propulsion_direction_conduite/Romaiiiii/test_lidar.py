@@ -2,46 +2,71 @@ from rplidar import RPLidar
 import numpy as np
 import time
 import matplotlib.pyplot as plt
+import serial  # Importation de la librairie serial
 
-#connexion et démarrage du lidar
-lidar = RPLidar("/dev/ttyUSB0",baudrate=256000)
-lidar.connect()
-print (lidar.get_info())
-lidar.start_motor()
-time.sleep(1)
+# Configuration du port et du débit
+port = "/dev/ttyUSB0"  # Remplacez par le bon port si nécessaire
+baudrate = 256000
 
-tableau_lidar_mm = [0]*360 #création d'un tableau de 360 zéros
+# Vérification du port série
+try:
+    ser = serial.Serial(port, baudrate)
+    print(ser)  # Affiche les informations du port série
+    ser.close()
+except serial.SerialException as e:
+    print(f"Erreur lors de l'ouverture du port série {port}: {e}")
+    exit()  # Quitte le programme en cas d'erreur
 
-try : 
-    for scan in lidar.iter_scans(scan_type='express') : 
-    #Le tableau se remplissant continuement, la boucle est infinie
-        #affichage du nombre de points récupérés lors du tour, pour les tests
-        print("nb pts : " + str(len(scan))) 
-        #rangement des données dans le tableau
-        for i in range(len(scan)) :
-            angle = min(359,max(0,359-int(scan[i][1]))) #scan[i][1] : angle 
-            tableau_lidar_mm[angle]=scan[i][2]          #scan[i][2] : distance       
+# Connexion et démarrage du lidar
+try:
+    lidar = RPLidar(port, baudrate=baudrate)
+    lidar.connect()
+    print(lidar.get_info())
+    lidar.start_motor()
+    time.sleep(1)
+except Exception as e:
+    print(f"Erreur lors de la connexion au lidar: {e}")
+    exit()
 
-except KeyboardInterrupt: #récupération du CTRL+C
+try:
+    # Création de la figure et des axes polaires
+    fig, ax = plt.subplots(subplot_kw={'projection': 'polar'})
+    ax.set_rmax(8000)  # Définir la distance maximale du graphique
+    ax.grid(True)
+
+    for scan in lidar.iter_scans(scan_type='express'):
+        # Effacer le graphique précédent
+        ax.clear()
+
+        # Affichage du nombre de points récupérés lors du tour, pour les tests
+        print("nb pts : " + str(len(scan)))
+
+        # Rangement des données dans des listes pour les angles et les distances
+        angles = []
+        distances = []
+        for i in range(len(scan)):
+            angle = 359 - int(scan[i][1])  # scan[i][1] : angle
+            distance = scan[i][2]  # scan[i][2] : distance
+            angles.append(np.radians(angle))  # Conversion en radians pour matplotlib
+            distances.append(distance)
+
+        # Affichage des points avec des traits pour la distance
+        ax.plot(angles, distances, marker='o', markersize=2, linestyle='-', linewidth=0.5)
+
+        # Mettre à jour le graphique
+        fig.canvas.draw()
+        fig.canvas.flush_events()
+
+except KeyboardInterrupt:  # Récupération du CTRL+C
     print("fin des acquisitions")
 
-#arrêt et déconnexion du lidar
-lidar.stop_motor()
-lidar.stop()
-time.sleep(1)
-lidar.disconnect()
+# Arrêt et déconnexion du lidar
+try:
+    lidar.stop_motor()
+    lidar.stop()
+    time.sleep(1)
+    lidar.disconnect()
+except Exception as e:
+    print(f"Erreur lors de l'arrêt du lidar: {e}")
 
-#affichage des données acquises sur l'environnement
-
-teta = [0]*360 #création d'un tableau de 360 zéros
-
-for i in range(360) :
-    teta[i]=i*np.pi/180
-
-fig = plt.figure()
-ax = plt.subplot(111, projection='polar')
-line = ax.scatter(teta, tableau_lidar_mm, s=5)
-line.set_array(tableau_lidar_mm)
-ax.set_rmax(8000)
-ax.grid(True)
-plt.show()
+plt.close()  # Fermer la fenêtre graphique
