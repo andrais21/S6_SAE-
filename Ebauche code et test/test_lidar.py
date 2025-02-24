@@ -2,71 +2,74 @@ from rplidar import RPLidar
 import numpy as np
 import time
 import matplotlib.pyplot as plt
-import serial  # Importation de la librairie serial
 
-# Configuration du port et du débit
-port = "/dev/ttyUSB0"  # Remplacez par le bon port si nécessaire
-baudrate = 256000
+# -----------------------------
+# Setup and start the LIDAR
+# -----------------------------
+lidar = RPLidar("/dev/ttyUSB0", baudrate=256000)
+lidar.connect()
+print(lidar.get_info())
+lidar.start_motor()
+time.sleep(1)
 
-# Vérification du port série
+# Create an array for 360 degree measurements (in mm)
+# We use a list of 360 values initialized to 0.
+tableau_lidar_mm = [0] * 360
+
+# Pre-compute angles (in radians) for each degree (0 to 359)
+teta = [i * np.pi / 180 for i in range(360)]
+
+# -----------------------------
+# Setup the live polar plot
+# -----------------------------
+plt.ion()  # Turn on interactive mode
+fig = plt.figure()
+ax = fig.add_subplot(111, projection='polar')
+# Initial scatter plot; we use a dummy color array (you can use a colormap if desired)
+sc = ax.scatter(teta, tableau_lidar_mm, s=5, c=tableau_lidar_mm, cmap='viridis')
+ax.set_rmax(8000)
+ax.grid(True)
+plt.title("Live LIDAR Scan (Polar Coordinates)")
+
+# -----------------------------
+# Main loop: update plot with each scan
+# -----------------------------
 try:
-    ser = serial.Serial(port, baudrate)
-    print(ser)  # Affiche les informations du port série
-    ser.close()
-except serial.SerialException as e:
-    print(f"Erreur lors de l'ouverture du port série {port}: {e}")
-    exit()  # Quitte le programme en cas d'erreur
-
-# Connexion et démarrage du lidar
-try:
-    lidar = RPLidar(port, baudrate=baudrate)
-    lidar.connect()
-    print(lidar.get_info())
-    lidar.start_motor()
-    time.sleep(1)
-except Exception as e:
-    print(f"Erreur lors de la connexion au lidar: {e}")
-    exit()
-
-try:
-    # Création de la figure et des axes polaires
-    fig, ax = plt.subplots(subplot_kw={'projection': 'polar'})
-    ax.set_rmax(8000)  # Définir la distance maximale du graphique
-    ax.grid(True)
-
+    # Iterate over LIDAR scans (using the 'express' scan type if available)
     for scan in lidar.iter_scans(scan_type='express'):
-        # Effacer le graphique précédent
-        ax.clear()
+        # For each scan, update the measurement for each angle.
+        # Each element of scan is a tuple: (quality, angle, distance)
+        for quality, angle, distance in scan:
+            # Convert the angle to an index between 0 and 359.
+            # (Adjust the conversion if your LIDAR reports angles differently.)
+            angle_index = int(min(359, max(0, 359 - angle)))
+            tableau_lidar_mm[angle_index] = distance
 
-        # Affichage du nombre de points récupérés lors du tour, pour les tests
-        print("nb pts : " + str(len(scan)))
+        # Update the scatter plot:
+        # Remove the old scatter plot and create a new one.
+        # (Alternatively, you could update the offsets if you prefer.)
+        sc.remove()
+        sc = ax.scatter(teta, tableau_lidar_mm, s=5, c=tableau_lidar_mm, cmap='viridis')
 
-        # Rangement des données dans des listes pour les angles et les distances
-        angles = []
-        distances = []
-        for i in range(len(scan)):
-            angle = 359 - int(scan[i][1])  # scan[i][1] : angle
-            distance = scan[i][2]  # scan[i][2] : distance
-            angles.append(np.radians(angle))  # Conversion en radians pour matplotlib
-            distances.append(distance)
+        # Redraw the figure canvas and pause briefly.
+        plt.draw()
+        plt.pause(0.001)
 
-        # Affichage des points avec des traits pour la distance
-        ax.plot(angles, distances, marker='o', markersize=2, linestyle='-', linewidth=0.5)
+        # Optionally, print the number of points processed in this scan
+        print("Number of points in scan: {}".format(len(scan)))
 
-        # Mettre à jour le graphique
-        fig.canvas.draw()
-        fig.canvas.flush_events()
+except KeyboardInterrupt:
+    print("Acquisition stopped by user.")
 
-except KeyboardInterrupt:  # Récupération du CTRL+C
-    print("fin des acquisitions")
-
-# Arrêt et déconnexion du lidar
-try:
+finally:
+    # -----------------------------
+    # Stop the LIDAR and close the connection
+    # -----------------------------
     lidar.stop_motor()
     lidar.stop()
     time.sleep(1)
     lidar.disconnect()
-except Exception as e:
-    print(f"Erreur lors de l'arrêt du lidar: {e}")
 
-plt.close()  # Fermer la fenêtre graphique
+    # Turn off interactive mode and show the final plot
+    plt.ioff()
+    plt.show()
