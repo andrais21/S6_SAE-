@@ -42,7 +42,7 @@ def receive_lidar_data(conn):
                     with data_lock:
                         lidar_data = measurements  # Stocke les données
 
-                    print(f"[INFO] Données LIDAR reçues: {measurements}")
+                    # print(f"[INFO] Données LIDAR reçues: {measurements}")
 
                 except json.JSONDecodeError as e:
                     print(f"[ERREUR] Problème de décodage JSON : {e}")
