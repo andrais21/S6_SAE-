@@ -37,7 +37,7 @@ class Car:
         screen.blit(self.rotated_sprite, self.position)
         for radar in self.radars:
             pos = radar[0]
-            pygame.draw.line(screen, (0, 255, 0), self.center, pos, 1)
+            #pygame.draw.line(screen, (0, 255, 0), self.center, pos, 1)
 
     def check_collision(self, game_map):
         self.alive = True
@@ -48,7 +48,7 @@ class Car:
 
     def check_radar(self, degree, game_map):
         length = 0
-        while length < 300:
+        while length < 500:
             x = int(self.center[0] + math.cos(math.radians(360 - (self.angle + degree))) * length)
             y = int(self.center[1] + math.sin(math.radians(360 - (self.angle + degree))) * length)
             if x < 0 or x >= game_map.get_width() or y < 0 or y >= game_map.get_height():
@@ -106,7 +106,7 @@ class Car:
             self.stuck_counter += 1
         else:
             self.stuck_counter = 0
-        if self.stuck_counter > 10 or (self.time > 200 and self.distance < 50):
+        if self.stuck_counter > 10 or (self.time > 250 and self.distance < 50):
             self.alive = False
 
     def get_data(self):
@@ -118,7 +118,7 @@ class Car:
     def get_reward(self):
         steering_penalty = abs(self.angle - self.last_angle) * 0.1
         self.last_angle = self.angle
-        return self.distance - steering_penalty
+        return self.distance - steering_penalty - self.oscillation_count
 
     def rotate_center(self, image, angle):
         rect = image.get_rect()
@@ -157,8 +157,8 @@ def run_simulation(genomes, config):
             if new_action == 0:
                 if car.last_action == 1:
                     car.oscillation_count += 1
-                    if car.oscillation_count > 3:
-                        car.angle += 2
+                    if car.oscillation_count > 1:
+                        car.angle += 0
                     else:
                         car.angle += 10
                 else:
@@ -167,8 +167,8 @@ def run_simulation(genomes, config):
             elif new_action == 1:
                 if car.last_action == 0:
                     car.oscillation_count += 1
-                    if car.oscillation_count > 3:
-                        car.angle -= 2
+                    if car.oscillation_count > 1:
+                        car.angle -= 0
                     else:
                         car.angle -= 10
                 else:
@@ -176,7 +176,7 @@ def run_simulation(genomes, config):
                     car.oscillation_count = 0
             elif new_action == 2:
                 if car.speed - 2 >= 12:
-                    car.speed -= 2
+                    car.speed -= 5
             elif new_action == 3:
                 car.speed += 2
             car.last_action = new_action
