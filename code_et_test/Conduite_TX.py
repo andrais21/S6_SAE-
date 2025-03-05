@@ -1,12 +1,13 @@
 import socket
-
+import time
 # Configuration de la connexion
 HOST = '192.168.2.148'  # Remplacez par l'adresse IP de votre Raspberry Pi
-PORT = 12345             # Port à utiliser pour la connexion
+PORT = 65432             # Port à utiliser pour la connexion
 
 def main():
     # Création de la connexion socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        time.sleep(0.1)
         s.connect((HOST, PORT))
         print(f"[INFO] Connexion établie avec {HOST}:{PORT}")
 

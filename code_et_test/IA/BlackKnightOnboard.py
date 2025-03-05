@@ -1,7 +1,3 @@
-import math
-import random
-import sys
-import os
 import neat
 import pickle
 import socket
@@ -10,8 +6,8 @@ import threading
 
 current_generation = 0
 BEST_GENOME_FILE = "best_knight.pkl"
-HOST = '0.0.0.0'
-PORT = 6969
+HOST = '196.168.2.147'
+PORT = 65432
 lidar_data = None
 acceleration_data = None
 data_lock = threading.Lock()
@@ -37,8 +33,8 @@ class Car:
         except Exception as e:
             print(f"[ERREUR] Échec de l'envoi de l'action : {e}")
 
-    def check_collision(self, acceleration_data):
-        if acceleration_data and (acceleration_data['x']**2 + acceleration_data['y']**2 + acceleration_data['z']**2)**0.5 >= 0.5:
+    def check_collision(self, speed_data):
+        if speed_data < 0.1:
             self.alive = False
 
     def update(self):
@@ -59,10 +55,7 @@ class Car:
 
     def get_data(self):
         with data_lock:
-            if lidar_data is not None:
-                lidar_filtered = lidar_data[45:315]  # Prendre uniquement les données entre -90° et 90°
-                return [x / 30 for x in lidar_filtered]
-            return [0] * 270
+            return [x / 1000 for x in lidar_data]
 
 
 def get_action_from_genome(car, net):
@@ -111,7 +104,7 @@ def run_simulation(genomes, config):
             if not car.is_alive():
                 genomes[i][1].fitness -= 10
                 car.speed = 1
-                car.send_action('x')
+                car.send_action('s')
                 continue
 
             genomes[i][1].fitness += car.get_reward()
@@ -136,29 +129,33 @@ def receive_lidar_data():
             conn, addr = s.accept()
             with conn:
                 print(f"[INFO] Connexion établie avec {addr}")
-                buffer = ""
+                buffer = b""  # Buffer pour stocker les données reçues
                 while True:
-                    line = conn.recv(1024).decode('utf-8')
-                    if not line:
+                    data = conn.recv(1024)  # Taille réduite à 1024 octets
+                    if not data:
                         print("[INFO] Connexion fermée")
                         break
-                    buffer += line
-                    while '\n' in buffer:
-                        message, buffer = buffer.split('\n', 1)
-                        try:
-                            data = json.loads(message.strip())
-                            with data_lock:
-                                if 'measurements' in data:
-                                    lidar_data = data['measurements']
-                                if 'acceleration' in data:
-                                    acceleration_data = data['acceleration']
-                        except json.JSONDecodeError as e:
-                            print(f"[ERREUR] Problème de décodage JSON : {e}")
+                    buffer += data  # Ajoute les données reçues dans le buffer
+                    if len(data) < 1024:
+                        # Si la taille du paquet est inférieure à 1024, on suppose que l'envoi est terminé
+                        break
+                # Décoder et traiter les données reçues
+                try:
+                    data = json.loads(buffer.decode())
+                    with data_lock:
+                        if 'measurements' in data:
+                            lidar_data = data['measurements']
+                        if 'acceleration' in data:
+                            acceleration_data = data['acceleration']
+                except json.JSONDecodeError as e:
+                    print(f"[ERREUR] Problème de décodage JSON : {e}")
     except Exception as e:
         print(f"[ERREUR] Erreur lors de la réception des données : {e}")
 
 
 if __name__ == "__main__":
+    lidar_thread = threading.Thread(target=receive_lidar_data, daemon=True)
+    lidar_thread.start()
     config_path = "./code_et_test/IA/radar_cfg.txt"
     config = neat.config.Config(neat.DefaultGenome, neat.DefaultReproduction, neat.DefaultSpeciesSet, neat.DefaultStagnation, config_path)
 
@@ -167,7 +164,6 @@ if __name__ == "__main__":
     stats = neat.StatisticsReporter()
     population.add_reporter(stats)
 
-    lidar_thread = threading.Thread(target=receive_lidar_data, daemon=True)
-    lidar_thread.start()
+
 
     population.run(run_simulation, 1000)
