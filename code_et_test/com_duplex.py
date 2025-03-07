@@ -22,7 +22,7 @@ LIDAR_PORT = '/dev/ttyUSB0'  # Adapté à votre branchement
 LIDAR_BAUDRATE = 256000  # Utilisation de 256000 pour le LIDAR
 
 # --- Configuration de la connexion réseau ---
-HOST = '192.168.2.147'  # Adresse IP de la machine distante (ordinateur)
+HOST = '192.168.2.148'  # Adresse IP de la machine distante (ordinateur)
 PORT = 65432  # Port à utiliser pour la connexion
 TIMEOUT = 5  # Délai d'attente en secondes
 
@@ -35,7 +35,7 @@ pwm_stop_prop = 7.3
 point_mort_prop = 0.4
 delta_pwm_max_prop = 1.5  # pwm à laquelle on atteint la vitesse maximale
 vitesse_max_m_s_hard = 8  # vitesse que peut atteindre la voiture
-vitesse_max_m_s_soft = 1  # vitesse maximale que l'on souhaite atteindre
+vitesse_max_m_s_soft = 6  # vitesse maximale que l'on souhaite atteindre
 vitesse = 0
 vitesse_cible = 0
 
@@ -47,9 +47,6 @@ angle_pwm_centre = 5.75
 angle_degre_max = 20  # vers la gauche
 angle_degre = 0
 angle_plus = 0
-
-v_x = 0.0  # Vitesse sur X
-last_time = time.time()
 # last_action = 0
 
 # --- Hysteresis Configuration ---
@@ -102,59 +99,6 @@ def set_vitesse_m_s(vitesse_m_s):
             pwm_stop_prop - direction_prop * (point_mort_prop - vitesse)
         )
     return vitesse_m_s
-
-def acc_speed():
-    now = time.time()
-    dt = now - last_time  # Calcul de l'intervalle de temps
-    last_time = now
-    
-    # Lire l'accélération linéaire (x, y, z)
-    acc = sensor.linear_acceleration
-    x, _, _ = acc  # On prend uniquement l'accélération X
-    # Calcul de la vitesse sur X
-    v_x += x * dt
-    return v_x
-
-# PID constants
-Kp = 0.1
-Ki = 0.01
-Kd = 0.01
-integral = 0.0
-last_error = 0.0
-dt = 0.01  # Update interval in seconds
-
-def aim_speed():
-    global integral, last_error, dt, vitesse_cible
-
-    while True:
-        current_speed = acc_speed()
-        error = vitesse_cible - current_speed
-
-        # Proportional term
-        P = Kp * error
-
-        # Integral term
-        integral += error * dt
-        I = Ki * integral
-
-        # Derivative term
-        derivative = (error - last_error) / dt
-        D = Kd * derivative
-        last_error = error
-
-        # Calculate adjustment
-        adjustment = P + I + D
-
-        # Apply adjustment to the current speed
-        new_speed = current_speed + adjustment
-
-        # Ensure the speed stays within allowed limits
-        new_speed = max(min(new_speed, vitesse_max_m_s_soft), -vitesse_max_m_s_hard)
-
-        # Send the new speed to the motors
-        set_vitesse_m_s(new_speed)
-
-        time.sleep(dt)
 
 def recule():
     """
@@ -214,15 +158,11 @@ def handle_commands(conn):
                 if command:
                     if command == 'w':  # Avancer
                         # Augmente la vitesse par un pas de 0.25 m/s, sans dépasser la vitesse maximale
-                        vitesse_cible += 0.25
-                        if vitesse_cible > vitesse_max_m_s_soft:  # Limiter à la vitesse maximale souhaitée
-                            vitesse_cible = vitesse_max_m_s_soft
+                        set_vitesse_m_s(vitesse_cible + (vitesse_cible < vitesse_max_m_s_soft))
 
                     elif command == 'r':  # Reculer
                         # Diminue la vitesse par un pas de 0.25 m/s, sans devenir négative
-                        vitesse_cible -= 0.25
-                        if vitesse_cible < 0:  # Limiter à 0 m/s, éviter la vitesse négative
-                            vitesse_cible = 0
+                        set_vitesse_m_s(vitesse_cible- (vitesse_cible>1))
                     elif command == 's':  # Reculer
                         recule()
                     elif command == 'a':  # Tourner à gauche
@@ -269,110 +209,75 @@ def main():
         print("BNO055 sensor initialized successfully")
     except Exception as e:
         print(f"[ERREUR] Erreur lors de l'initialisation du BNO055 : {e}")
-
+    set_direction_degre(0)
     try:
+        # Créer un socket et se lier à l'adresse et au port
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            # Définir le délai d'attente d'envoi
-            # s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO, TIMEOUT)
+            # Configurer l'adresse et le port pour le serveur
+            s.bind((HOST, PORT))  # Ici on utilise bind et non connect
+            s.listen(1)  # Le serveur écoute les connexions entrantes
 
-            print("[INFO] Recherche d'une connexion avec l'ordinateur...")  # Ajout du message de recherche
-            s.connect((HOST, PORT))  # Se connecter à l'ordinateur
-            print(f"[INFO] Connexion établie avec l'ordinateur sur {HOST}:{PORT}")  # Ajout de l'IP
+            print("[INFO] En attente de connexion...")  # Ajout du message de recherche
+            conn, addr = s.accept()  # Accepter la connexion du client
+            with conn:
+                print(f"[INFO] Connexion établie avec {addr}")
 
-            # Démarrer le thread pour gérer les commandes
-            command_thread = threading.Thread(
-                target=handle_commands, args=(s,), daemon=True
-            )
-            command_thread.start()
+                # Démarrer le thread pour gérer les commandes
+                command_thread = threading.Thread(
+                    target=handle_commands, args=(conn,), daemon=True
+                )
+                command_thread.start()
 
-            # Start the speed control thread
-            speed_thread = threading.Thread(target=aim_speed, daemon=True)
-            speed_thread.start()
+                # Démarrer le thread pour contrôler la vitesse
 
-            # Boucle principale pour le LIDAR
-            try:
-                while True:
-                    try:
-                        for scan in lidar.iter_scans():
-                            # print(f"[DEBUG] Scan data: {scan}")
-                            # Adaptez cette partie en fonction de la structure réelle des données
+                # Boucle principale pour le LIDAR
+                try:
+                    set_vitesse_m_s(1)
+                    while True:
+                        try:
+                            for scan in lidar.iter_scans():
+                                # Traitement des scans du LIDAR
+                                tableau_lidar_mm = [0] * 360
+                                for i, (quality, angle, distance) in enumerate(scan):
+                                    if not all(isinstance(x, (int, float)) for x in [quality, angle, distance]):
+                                        print(f"[AVERTISSEMENT] Type incorrect dans le scan {i}")
+                                        continue
+                                    if 90 <= angle <= 270:  # Ignorer ces points
+                                        continue
+                                    if distance < 1000:
+                                        # Remap et stockage des données LIDAR
+                                        if 270 <= angle < 360 or 0 <= angle <= 90:
+                                            angle_index = int(angle - 360) if angle >= 270 else int(angle)
+                                            if -90 <= angle_index <= 90:
+                                                tableau_lidar_mm[angle_index + 90] = distance
 
-                            # Réinitialiser le tableau des mesures avant chaque scan
-                            tableau_lidar_mm = [0] * 360
+                                # Préparer les données à envoyer
+                                acceleration = sum(abs(x) for x in sensor.linear_acceleration)
+                                data = {
+                                    "measurements": tableau_lidar_mm,
+                                    "accel": acceleration
+                                }
+                                data_json = json.dumps(data)
 
-                            for i, (quality, angle, distance) in enumerate(scan):
-                                # Vérification des types
-                                if not all(
-                                    isinstance(x, (int, float))
-                                    for x in [quality, angle, distance]
-                                ):
-                                    print(
-                                        f"[AVERTISSEMENT] Type de données incorrect dans le scan {i}: quality={type(quality)}, angle={type(angle)}, distance={type(distance)}"
-                                    )
-                                    continue
-
-                                # Ignorer les points entre 135° et 225°
-                                if 90 <= angle <= 270:
-                                    continue  # Ignorer ce point
-
-                                # N'envoyer que les points dont la distance est inférieure à 4000 mm
-                                if distance < 1000:
-                                    # Filtrer les angles entre 270° et 90°
-                                    if 270 <= angle < 360 or 0 <= angle <= 90:
-                                        # Remap 270-359 to -90 to -1
-                                        if angle >= 270:
-                                            angle_index = int(angle - 360)  # Remap 270-359 to -90 to -1
-                                        else:
-                                            angle_index = int(angle)  # Keep 0-90 as is
-
-                                        # Vérification de l'index
-                                        if -90 <= angle_index <= 90:
-                                            tableau_lidar_mm[angle_index + 90] = distance
-                                        else:
-                                            print(f"[AVERTISSEMENT] Index d'angle invalide : {angle_index}")
-
-
-
-
-                            # Préparer les données à envoyer
-                            # Lecture de l'accélération linéaire (x, y, z)
-                            
-
-                            # Calculer la somme des valeurs absolues de l'accélération
-                            # Récupérer la vitesse du moteur (exemple : utiliser la valeur de consigne)
-                            vitesse = acc_speed()
-
-                            data = {
-                                "measurements": tableau_lidar_mm,
-                                "speed": vitesse  # Envoyer la vitesse
-                            }
-                            data_json = json.dumps(data)
-                            # Envoyer les données avec un saut de ligne pour délimiter les messages
-                            try:
-                                s.sendall((data_json + "\n").encode('utf-8'))
-                            except BrokenPipeError:
-                                print("[ERREUR] Connexion interrompue par l'ordinateur.")
-                                break  # Sortir de la boucle LIDAR
-                            except socket.timeout:
-                                print("[ERREUR] Délai d'attente d'envoi dépassé.")
-                                break  # Sortir de la boucle LIDAR
-
-                    except Exception as e:
-                        print(
-                            f"[ERREUR] Erreur lors de la lecture des scans du LIDAR : {e}"
-                        )
-                        break  # Sortir de la boucle LIDAR
-            except Exception as e:
-                print(f"[ERREUR] Erreur dans la boucle principale du LIDAR : {e}")
-
-    except KeyboardInterrupt:  # Récupération du CTRL+C
+                                try:
+                                    conn.sendall((data_json + "\n").encode('utf-8'))
+                                except BrokenPipeError:
+                                    print("[ERREUR] Connexion interrompue par le client.")
+                                    break
+                                except socket.timeout:
+                                    print("[ERREUR] Délai d'attente d'envoi dépassé.")
+                                    break
+                        except Exception as e:
+                            print(f"[ERREUR] Erreur LIDAR : {e}")
+                            break
+                except Exception as e:
+                    print(f"[ERREUR] Erreur dans la boucle principale du LIDAR : {e}")
+    except KeyboardInterrupt:
         print("Fin des acquisitions")
-
     except Exception as e:
-        print(f"[ERREUR] Erreur principale : {e}")
-
+        print(f"[ERREUR] Erreur dans la connexion serveur : {e}")
     finally:
-        # Arrêt et déconnexion du LIDAR et des moteurs
+        # Arrêt des moteurs et du LIDAR
         try:
             lidar.stop_motor()
             lidar.stop()
