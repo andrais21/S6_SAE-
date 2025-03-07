@@ -3,10 +3,11 @@ import pickle
 import socket
 import json
 import threading
+import time
 
 current_generation = 0
 BEST_GENOME_FILE = "best_knight.pkl"
-HOST = '196.168.2.147'
+HOST = '192.168.2.148'
 PORT = 65432
 lidar_data = None
 acceleration_data = None
@@ -24,17 +25,28 @@ class Car:
         self.last_action = None
         self.oscillation_count = 0
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.connect((HOST, PORT))  # Connect to the same socket
+        
+        # Tentative de connexion avec un délai pour s'assurer que le serveur est prêt
+        connected = False
+        while not connected:
+            try:
+                self.socket.connect((HOST, PORT))
+                connected = True
+                print(f"Connexion réussie à {HOST}:{PORT}")
+            except ConnectionRefusedError:
+                print(f"[ERREUR] Impossible de se connecter à {HOST}:{PORT}. Tentative de reconnexion...")
+                time.sleep(1)  # Attendre une seconde avant de réessayer
 
     def send_action(self, action):
         try:
             message = json.dumps({'action': action})  # Send action as JSON
             self.socket.sendall(message.encode('utf-8') + b'\n')
+            print(f"[INFO] Action envoyée : {action}")
         except Exception as e:
             print(f"[ERREUR] Échec de l'envoi de l'action : {e}")
 
-    def check_collision(self, speed_data):
-        if speed_data < 0.1:
+    def check_collision(self, accel_data):
+        if accel_data < 0.1:
             self.alive = False
 
     def update(self):
@@ -49,18 +61,27 @@ class Car:
         return self.alive
 
     def get_reward(self):
-        steering_penalty = abs(self.angle - self.last_angle) * 0.1
+        steering_penalty = abs(self.angle - self.last_angle) * 0.1  # Pénalité pour la direction
         self.last_angle = self.angle
-        return self.distance - steering_penalty - self.oscillation_count
+        reward = self.distance - steering_penalty - self.oscillation_count
+        
+        # Augmenter la récompense en fonction de la vitesse
+        reward += self.speed * 0.5  # Encourage l'augmentation de la vitesse
+        print(f"[INFO] Récompense calculée : {reward}")
+        return reward
 
     def get_data(self):
-        with data_lock:
-            return [x / 1000 for x in lidar_data]
+        radar_data = [int(radar[1] / 30) for radar in self.radars]
+        print(f"[INFO] Données des radars : {radar_data}")  # Imprimez les données des radars
+        return radar_data
+
 
 
 def get_action_from_genome(car, net):
     lidar_data = car.get_data()
+    print(f"[INFO] Données Lidar envoyées au réseau : {lidar_data}")  # Afficher les données Lidar envoyées
     output = net.activate(lidar_data)
+    print(f"[INFO] Sortie du réseau de neurones : {output}")  # Afficher la sortie du réseau
     return output.index(max(output))
 
 
@@ -68,7 +89,7 @@ def run_simulation(genomes, config):
     global current_generation
     nets = []
     cars = []
-
+    
     for i, g in genomes:
         net = neat.nn.FeedForwardNetwork.create(g, config)
         nets.append(net)
@@ -80,12 +101,14 @@ def run_simulation(genomes, config):
     still_alive = len(cars)
 
     while still_alive > 0:
+        print(f"[INFO] Génération: {current_generation}, Voitures vivantes: {still_alive}")
         for i, car in enumerate(cars):
             if not car.is_alive():
                 continue
-
             action = get_action_from_genome(car, nets[i])
-
+            print(f"[INFO] Action de la voiture {i}: {action}")
+            
+            # Logique d'action (ajoutée pour le test)
             if action == 0:
                 car.angle += 10
                 car.send_action('a')
@@ -95,7 +118,7 @@ def run_simulation(genomes, config):
             elif action == 2 and car.speed >= 2:
                 car.speed -= 1
                 car.send_action('r')
-            elif action == 3:
+            elif action == 3 and car.speed <= 6:
                 car.speed += 1
                 car.send_action('w')
 
@@ -111,7 +134,10 @@ def run_simulation(genomes, config):
 
         still_alive = sum(car.is_alive() for car in cars)
         counter += 1
+        print(f"[INFO] Compteur: {counter}, Voitures vivantes: {still_alive}")
+
         if counter == 30 * 40:
+            print("[INFO] Fin de la simulation après 40 secondes.")
             break
 
     best_genome = max(genomes, key=lambda g: g[1].fitness)
@@ -163,7 +189,5 @@ if __name__ == "__main__":
     population.add_reporter(neat.StdOutReporter(True))
     stats = neat.StatisticsReporter()
     population.add_reporter(stats)
-
-
 
     population.run(run_simulation, 1000)
