@@ -24,9 +24,9 @@ class Car:
         self.last_angle = self.angle
         self.last_action = None
         self.oscillation_count = 0
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         
-        # Tentative de connexion avec un délai pour s'assurer que le serveur est prêt
+        # Création de la connexion unique au serveur
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         connected = False
         while not connected:
             try:
@@ -35,18 +35,54 @@ class Car:
                 print(f"Connexion réussie à {HOST}:{PORT}")
             except ConnectionRefusedError:
                 print(f"[ERREUR] Impossible de se connecter à {HOST}:{PORT}. Tentative de reconnexion...")
-                time.sleep(1)  # Attendre une seconde avant de réessayer
+                time.sleep(1)
+        
+        # Démarrage d'un thread pour recevoir les données via la même connexion
+        self.receive_thread = threading.Thread(target=self.receive_data, daemon=True)
+        self.receive_thread.start()
+
+    def receive_data(self):
+        global lidar_data, acceleration_data
+        try:
+            while True:
+                buffer = b""
+                # Attendre la fin d'un message délimité par "\n"
+                while b"\n" not in buffer:
+                    data = self.socket.recv(1024)
+                    if not data:
+                        print("[INFO] Connexion fermée par le serveur")
+                        return
+                    buffer += data
+                
+                # Découper le buffer selon le délimiteur "\n"
+                messages = buffer.split(b"\n")
+                # Traiter tous les messages complets reçus
+                for message in messages[:-1]:
+                    try:
+                        data_json = json.loads(message.decode())
+                        with data_lock:
+                            if 'measurements' in data_json:
+                                lidar_data = data_json['measurements']
+                            if 'accel' in data_json:
+                                acceleration_data = data_json['accel']
+                                print(f"[INFO] Données d'accélération reçues : {acceleration_data}")
+                    except json.JSONDecodeError as e:
+                        print(f"[ERREUR] Problème de décodage JSON : {e}")
+                # Le dernier morceau peut être incomplet, on le garde pour la prochaine lecture
+                buffer = messages[-1]
+        except Exception as e:
+            print(f"[ERREUR] Erreur lors de la réception des données : {e}")
 
     def send_action(self, action):
         try:
-            message = json.dumps({'action': action})  # Send action as JSON
+            message = json.dumps({'action': action})
             self.socket.sendall(message.encode('utf-8') + b'\n')
             print(f"[INFO] Action envoyée : {action}")
         except Exception as e:
             print(f"[ERREUR] Échec de l'envoi de l'action : {e}")
 
     def check_collision(self, accel_data):
-        if accel_data < 0.1:
+        if accel_data < 0.5:
             self.alive = False
 
     def update(self):
@@ -61,29 +97,28 @@ class Car:
         return self.alive
 
     def get_reward(self):
-        steering_penalty = abs(self.angle - self.last_angle) * 0.1  # Pénalité pour la direction
+        steering_penalty = abs(self.angle - self.last_angle) * 0.1
         self.last_angle = self.angle
         reward = self.distance - steering_penalty - self.oscillation_count
-        
-        # Augmenter la récompense en fonction de la vitesse
-        reward += self.speed * 0.5  # Encourage l'augmentation de la vitesse
+        reward += self.speed * 0.5
         print(f"[INFO] Récompense calculée : {reward}")
         return reward
 
     def get_data(self):
-        radar_data = [int(radar[1] / 30) for radar in self.radars]
-        print(f"[INFO] Données des radars : {radar_data}")  # Imprimez les données des radars
+        with data_lock:
+            if lidar_data is not None:
+                # On suppose que lidar_data est une liste de distances en millimètres
+                radar_data = [int(distance / 1000) for distance in lidar_data]
+            else:
+                radar_data = [0] * 360  # Par exemple, 360 valeurs
+        print(f"[INFO] Données des radars : {radar_data}")
         return radar_data
 
-
-
 def get_action_from_genome(car, net):
-    lidar_data = car.get_data()
-    print(f"[INFO] Données Lidar envoyées au réseau : {lidar_data}")  # Afficher les données Lidar envoyées
-    output = net.activate(lidar_data)
-    print(f"[INFO] Sortie du réseau de neurones : {output}")  # Afficher la sortie du réseau
+    data = car.get_data()
+    output = net.activate(data)
+    print(f"[INFO] Sortie du réseau de neurones : {output}")
     return output.index(max(output))
-
 
 def run_simulation(genomes, config):
     global current_generation
@@ -95,11 +130,11 @@ def run_simulation(genomes, config):
         nets.append(net)
         g.fitness = 0
         cars.append(Car())
-
+    
     current_generation += 1
     counter = 0
     still_alive = len(cars)
-
+    
     while still_alive > 0:
         print(f"[INFO] Génération: {current_generation}, Voitures vivantes: {still_alive}")
         for i, car in enumerate(cars):
@@ -108,7 +143,7 @@ def run_simulation(genomes, config):
             action = get_action_from_genome(car, nets[i])
             print(f"[INFO] Action de la voiture {i}: {action}")
             
-            # Logique d'action (ajoutée pour le test)
+            # Logique d'action
             if action == 0:
                 car.angle += 10
                 car.send_action('a')
@@ -121,73 +156,37 @@ def run_simulation(genomes, config):
             elif action == 3 and car.speed <= 6:
                 car.speed += 1
                 car.send_action('w')
-
+            
             car.update()
-
+            
             if not car.is_alive():
                 genomes[i][1].fitness -= 10
                 car.speed = 1
                 car.send_action('s')
                 continue
-
+            
             genomes[i][1].fitness += car.get_reward()
-
+        
         still_alive = sum(car.is_alive() for car in cars)
         counter += 1
         print(f"[INFO] Compteur: {counter}, Voitures vivantes: {still_alive}")
-
+        
         if counter == 30 * 40:
             print("[INFO] Fin de la simulation après 40 secondes.")
             break
-
+    
     best_genome = max(genomes, key=lambda g: g[1].fitness)
     with open(BEST_GENOME_FILE, 'wb') as f:
         pickle.dump(best_genome[1], f)
 
-
-def receive_lidar_data():
-    global lidar_data, acceleration_data
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind((HOST, PORT))
-            s.listen()
-            print(f"[INFO] En attente de connexion sur {HOST}:{PORT}...")
-            conn, addr = s.accept()
-            with conn:
-                print(f"[INFO] Connexion établie avec {addr}")
-                buffer = b""  # Buffer pour stocker les données reçues
-                while True:
-                    data = conn.recv(1024)  # Taille réduite à 1024 octets
-                    if not data:
-                        print("[INFO] Connexion fermée")
-                        break
-                    buffer += data  # Ajoute les données reçues dans le buffer
-                    if len(data) < 1024:
-                        # Si la taille du paquet est inférieure à 1024, on suppose que l'envoi est terminé
-                        break
-                # Décoder et traiter les données reçues
-                try:
-                    data = json.loads(buffer.decode())
-                    with data_lock:
-                        if 'measurements' in data:
-                            lidar_data = data['measurements']
-                        if 'acceleration' in data:
-                            acceleration_data = data['acceleration']
-                except json.JSONDecodeError as e:
-                    print(f"[ERREUR] Problème de décodage JSON : {e}")
-    except Exception as e:
-        print(f"[ERREUR] Erreur lors de la réception des données : {e}")
-
-
 if __name__ == "__main__":
-    lidar_thread = threading.Thread(target=receive_lidar_data, daemon=True)
-    lidar_thread.start()
     config_path = "./code_et_test/IA/radar_cfg.txt"
-    config = neat.config.Config(neat.DefaultGenome, neat.DefaultReproduction, neat.DefaultSpeciesSet, neat.DefaultStagnation, config_path)
-
+    config = neat.config.Config(neat.DefaultGenome, neat.DefaultReproduction,
+                                neat.DefaultSpeciesSet, neat.DefaultStagnation, config_path)
+    
     population = neat.Population(config)
     population.add_reporter(neat.StdOutReporter(True))
     stats = neat.StatisticsReporter()
     population.add_reporter(stats)
-
+    
     population.run(run_simulation, 1000)
