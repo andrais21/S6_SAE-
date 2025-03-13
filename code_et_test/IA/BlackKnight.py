@@ -37,7 +37,7 @@ class Car:
         screen.blit(self.rotated_sprite, self.position)
         for radar in self.radars:
             pos = radar[0]
-            #pygame.draw.line(screen, (0, 255, 0), self.center, pos, 1)
+            pygame.draw.line(screen, (0, 255, 0), self.center, pos, 1)
 
     def check_collision(self, game_map):
         self.alive = True
